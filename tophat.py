@@ -21,8 +21,8 @@ def tophat_adaptive_threshold(
     2. 局部自适应阈值: 对 Top-Hat 增强图进行二值化，
        局部阈值分割能有效应对画面光照不均。
     3. 输出结果包含:
-       - 归一化的 Top-Hat 增强图（用于观察效果）
-       - 二值检测结果图（白色=目标，黑色=背景）
+       - 二值检测结果（_binary.png）
+       - 归一化的 Top-Hat 增强图（_tophat.png，用于观察效果）
 
     参数说明:
         morph_shape : 结构元素形状 (cv2.MORPH_ELLIPSE, MORPH_RECT, MORPH_CROSS)
@@ -40,18 +40,33 @@ def tophat_adaptive_threshold(
     kernel = cv2.getStructuringElement(morph_shape, (morph_ksize, morph_ksize))
     tophat = cv2.morphologyEx(img, cv2.MORPH_TOPHAT, kernel)
 
+    # ----- 2. 局部自适应阈值 (补齐缺失的局部对比度步骤) -----
+    # 确保 block_size 是奇数
+    if block_size % 2 == 0:
+        block_size += 1
 
+    # 在 Top-Hat 增强图上使用高斯加权的局部自适应阈值
+    binary = cv2.adaptiveThreshold(
+        tophat,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # 或 cv2.ADAPTIVE_THRESH_MEAN_C
+        cv2.THRESH_BINARY,
+        block_size,
+        C
+    )
 
     # ----- 3. 保存结果 -----
     base_name = os.path.splitext(os.path.basename(image_path))[0]
+
+    # 保存二值检测结果
+    binary_file = os.path.join(output_dir, f"{base_name}_binary.png")
+    cv2.imwrite(binary_file, binary)
 
     # 保存 Top-Hat 增强图 (归一化到 0-255 便于人眼查看)
     if save_enhanced:
         norm = cv2.normalize(tophat, None, 0, 255, cv2.NORM_MINMAX)
         enhanced_file = os.path.join(output_dir, f"{base_name}_tophat.png")
         cv2.imwrite(enhanced_file, norm.astype(np.uint8))
-
-    
 
     print(f"已处理: {base_name}")
 
@@ -97,9 +112,9 @@ if __name__ == "__main__":
     # 结构元素尺寸: 根据目标大小设定，通常略大于目标直径 (像素)
     KSIZE = 3
     # 局部自适应阈值块大小: 奇数，大致为背景局部区域尺寸
-    BLOCK = 10
+    BLOCK = 11        # 自动调整为奇数，10 → 11
     # 阈值常数: 均值 - C, 增大则抑制更多弱目标，减少则保留更多
-    CONST_C = -5
+    CONST_C = 3
     # 是否保存 Top-Hat 增强图 (用于可视化对比)
     SAVE_ENHANCE = True
 
