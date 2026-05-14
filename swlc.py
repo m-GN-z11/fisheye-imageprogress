@@ -10,25 +10,17 @@ def merge_rects_by_center_distance(rects, distance_threshold=10):
     根据矩形中心之间的欧氏距离合并矩形。
     将所有中心距离 ≤ distance_threshold 的矩形归为一组，
     每组生成一个能覆盖该组所有矩形的最小外接矩形。
-
-    参数:
-        rects: 列表，每个元素为 (x, y, w, h)
-        distance_threshold: 中心距离阈值（像素）
-    返回:
-        合并后的矩形列表，格式相同。
     """
     if not rects:
         return []
 
     n = len(rects)
-    # 计算每个矩形的中心坐标
     centers = []
     for (x, y, w, h) in rects:
         cx = x + w / 2.0
         cy = y + h / 2.0
         centers.append((cx, cy))
 
-    # 并查集
     parent = list(range(n))
     def find(i):
         while parent[i] != i:
@@ -41,7 +33,6 @@ def merge_rects_by_center_distance(rects, distance_threshold=10):
         if root_i != root_j:
             parent[root_i] = root_j
 
-    # 根据距离阈值合并
     for i in range(n):
         for j in range(i + 1, n):
             cx1, cy1 = centers[i]
@@ -50,7 +41,6 @@ def merge_rects_by_center_distance(rects, distance_threshold=10):
             if dist <= distance_threshold:
                 union(i, j)
 
-    # 按根节点分组
     groups = {}
     for i in range(n):
         root = find(i)
@@ -61,13 +51,11 @@ def merge_rects_by_center_distance(rects, distance_threshold=10):
         if len(group) == 1:
             merged.append(group[0])
         else:
-            # 计算覆盖组内所有矩形的最小边界
             x_min = min(r[0] for r in group)
             y_min = min(r[1] for r in group)
             x_max = max(r[0] + r[2] for r in group)
             y_max = max(r[1] + r[3] for r in group)
             merged.append([x_min, y_min, x_max - x_min, y_max - y_min])
-
     return merged
 
 
@@ -82,17 +70,17 @@ def tophat_adaptive_threshold(
     analyze=True,
     min_area=2,
     save_marked=True,
-    merge_distance=10  # 中心距离阈值
+    merge_distance=10
 ):
     """
-    对单张图像执行形态学 Top-Hat 变换 + 局部自适应阈值，
-    检测目标并合并中心距离 ≤ merge_distance 的边界框，
-    输出带有连续编号的标记图像和 CSV。
+    基于 Top-Hat + 局部自适应阈值的红外小目标检测 + 目标分析
     """
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"无法读取图像: {image_path}")
         return
+
+    os.makedirs(output_dir, exist_ok=True)
 
     # ----- 1. 形态学 Top-Hat 变换 -----
     kernel = cv2.getStructuringElement(morph_shape, (morph_ksize, morph_ksize))
@@ -110,9 +98,7 @@ def tophat_adaptive_threshold(
 
     # ----- 3. 保存基础结果 -----
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    os.makedirs(output_dir, exist_ok=True)
-
-    binary = cv2.bitwise_not(binary)  # 取反，目标变为白色
+    binary = cv2.bitwise_not(binary)  # 目标变为白色
     binary_file = os.path.join(output_dir, f"{base_name}_binary.png")
     cv2.imwrite(binary_file, binary)
 
@@ -121,11 +107,13 @@ def tophat_adaptive_threshold(
         enhanced_file = os.path.join(output_dir, f"{base_name}_tophat.png")
         cv2.imwrite(enhanced_file, norm.astype(np.uint8))
 
-    # ----- 4. 目标检测、合并与标记 -----
+    # ========== 新增加的目标分析模块 ==========
+    targets_info = []
     if analyze:
+        # 确保 binary 是 uint8 类型 (经过 bitwise_not 后已是)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # 4.1 收集通过面积过滤的矩形
+        # 面积过滤
         rects = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -133,23 +121,19 @@ def tophat_adaptive_threshold(
                 x, y, w, h = cv2.boundingRect(cnt)
                 rects.append((x, y, w, h))
 
-        # 4.2 根据中心距离合并矩形
+        # 中心距离合并
         merged_rects = merge_rects_by_center_distance(rects, merge_distance)
 
-        # 4.3 为每个合并后的矩形生成属性并绘制
-        targets_info = []
+        # 绘制标记图
         marked_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
         for idx, (x, y, w, h) in enumerate(merged_rects, start=1):
-            # 计算矩形区域内的强度特征（基于原图 & Top‑Hat 图）
-            rect_mask = np.zeros_like(img, dtype=np.uint8)
-            cv2.rectangle(rect_mask, (x, y), (x + w, y + h), 255, -1)
-            roi_img = img[rect_mask == 255]
-            roi_tophat = tophat[rect_mask == 255]
+            roi_img = img[y:y+h, x:x+w]
+            roi_tophat = tophat[y:y+h, x:x+w]
 
-            mean_intensity = np.mean(roi_img) if len(roi_img) > 0 else 0
-            max_intensity = np.max(roi_img) if len(roi_img) > 0 else 0
-            tophat_mean = np.mean(roi_tophat) if len(roi_tophat) > 0 else 0
+            mean_intensity = np.mean(roi_img) if roi_img.size > 0 else 0
+            max_intensity = np.max(roi_img) if roi_img.size > 0 else 0
+            tophat_mean = np.mean(roi_tophat) if roi_tophat.size > 0 else 0
             area = w * h
             cx = x + w / 2.0
             cy = y + h / 2.0
@@ -170,12 +154,10 @@ def tophat_adaptive_threshold(
             }
             targets_info.append(target)
 
-            # 绘制矩形框和编号（不画中心点）
             cv2.rectangle(marked_img, (x, y), (x + w, y + h), (0, 255, 0), 1)
             cv2.putText(marked_img, str(idx), (x, y - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        # 保存标记图像
         if save_marked and targets_info:
             marked_file = os.path.join(output_dir, f"{base_name}_marked.png")
             cv2.imwrite(marked_file, marked_img)
@@ -191,7 +173,11 @@ def tophat_adaptive_threshold(
             for t in targets_info:
                 writer.writerow(t)
 
-        print(f"已处理: {base_name}, 检测到 {len(targets_info)} 个目标 (中心距离≤{merge_distance}合并, 面积≥{min_area})")
+        print(f"已处理: {base_name}, 检测到 {len(targets_info)} 个目标 "
+              f"(中心距离≤{merge_distance}合并, 面积≥{min_area})")
+    else:
+        print(f"已处理: {base_name}")
+    # ========== 分析模块结束 ==========
 
 
 def batch_tophat_adaptive(
@@ -202,12 +188,9 @@ def batch_tophat_adaptive(
     block_size=15,
     C=2,
     save_enhanced=True,
-    analyze=True,
-    min_area=2,
-    save_marked=True,
-    merge_distance=10   # 新增参数
+    **kwargs
 ):
-    """批量处理，支持中心距离合并参数"""
+    """批量处理文件夹内的所有图像，支持额外分析参数"""
     os.makedirs(output_folder, exist_ok=True)
 
     files = []
@@ -221,36 +204,35 @@ def batch_tophat_adaptive(
     print(f"共找到 {len(files)} 张图像，开始批量处理...")
     for f in files:
         tophat_adaptive_threshold(
-            f, output_folder,
+            f,
+            output_folder,
             morph_shape=morph_shape,
             morph_ksize=morph_ksize,
             block_size=block_size,
             C=C,
             save_enhanced=save_enhanced,
-            analyze=analyze,
-            min_area=min_area,
-            save_marked=save_marked,
-            merge_distance=merge_distance
+            **kwargs
         )
     print("批量处理完成。")
 
 
 if __name__ == "__main__":
-    # ---------- 参数调整区 ----------
+    # ========== 参数可调区域 ==========
     SHAPE = cv2.MORPH_RECT
     KSIZE = 3
     BLOCK = 11
     CONST_C = 3
     SAVE_ENHANCE = True
 
+    # 目标分析参数
     ANALYZE = True
     MIN_AREA = 2
     SAVE_MARKED = True
-    MERGE_DIST = 10   # 中心距离 ≤ 10 像素即合并
+    MERGE_DIST = 10
 
     batch_tophat_adaptive(
         input_folder="./images",
-        output_folder="./tophat_results",
+        output_folder="./swlc_results",
         morph_shape=SHAPE,
         morph_ksize=KSIZE,
         block_size=BLOCK,
